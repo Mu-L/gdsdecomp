@@ -38,13 +38,9 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 			FileVersion = fileVersion;
 		}
 
-		public readonly bool Matches(AssemblyReference? reference)
+		public readonly bool Matches(IAssemblyReference? reference)
 		{
 			return reference != null && Name == reference.Name && AssemblyVersion == reference.Version;
-		}
-		public readonly bool Matches(AssemblyNameReference? other)
-		{
-			return other != null && Name == other.Name && AssemblyVersion == other.Version;
 		}
 
 		public readonly bool Equals(RuntimeComponentInfo other)
@@ -101,14 +97,16 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 	public readonly string Name;
 	public readonly string Version;
 	public readonly string Type;
-	public readonly string? Path;
 	public readonly string? Sha512;
+	public readonly string? Path;
+	public readonly string? HashPath;
 	public readonly bool Serviceable;
 	public readonly DotNetCoreDepInfo[] deps;
 	public readonly RuntimeComponentInfo[] runtimeComponents;
 	public readonly NativeComponentInfo[] nativeComponents;
 	public readonly RuntimeComponentInfo? ThisRuntimeComponent;
 	public HashMatchesNugetOrg HashMatchesNugetOrgStatus { get; private set; } = HashMatchesNugetOrg.Unknown;
+	public System.Version AssemblyVersion => ThisRuntimeComponent?.AssemblyVersion ?? System.Version.Parse(ConvertToAssemblyVersion(Version));
 	public AssemblyNameReference AssemblyRef => ThisRuntimeComponent?.AssemblyRef ?? AssemblyNameReference.Parse($"{Name}, Version={ConvertToAssemblyVersion(Version)}, Culture=neutral, PublicKeyToken=null");
 
 	public bool IsAvailableOnNuget => Serviceable && HashMatchesNugetOrgStatus != HashMatchesNugetOrg.NoMatch;
@@ -165,6 +163,7 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 		this.Type = type;
 		this.Serviceable = serviceable;
 		this.Path = path;
+		this.HashPath = hashPath;
 		this.Sha512 = sha512;
 
 		this.deps = deps;
@@ -322,6 +321,7 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 			&& Type == other.Type
 			&& Serviceable == other.Serviceable
 			&& Path == other.Path
+			&& HashPath == other.HashPath
 			&& Sha512 == other.Sha512
 			&& deps.SequenceEqual(other.deps)
 			&& runtimeComponents.SequenceEqual(other.runtimeComponents)
@@ -329,33 +329,19 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 			&& (ThisRuntimeComponent?.Equals(other.ThisRuntimeComponent) ?? other.ThisRuntimeComponent == null);
 	}
 
-	public bool HasDep(string name, string? type, bool serviceableAndNuGetOnly = false)
+	public bool Matches(IAssemblyReference? reference)
 	{
-		if (runtimeComponents.Any(c => c.Name == name) && !((!string.IsNullOrEmpty(type) && Type != type) || (serviceableAndNuGetOnly && !IsAvailableOnNuget)))
+		return reference != null && reference.Name == Name && reference.Version == AssemblyVersion;
+	}
+
+	public bool HasDep(IAssemblyReference reference, string? type, bool serviceableAndNuGetOnly = false)
+	{
+		bool ShouldFilter(DotNetCoreDepInfo dep) => !((string.IsNullOrEmpty(type) || dep.Type == type) && (!serviceableAndNuGetOnly || dep.IsAvailableOnNuget));
+		if (runtimeComponents.Any(c => c.Matches(reference)) && !ShouldFilter(this))
 		{
 			return true;
 		}
-		for (int i = 0; i < deps.Length; i++)
-		{
-			if ((!string.IsNullOrEmpty(type) && deps[i].Type != type) ||
-				(serviceableAndNuGetOnly && !deps[i].IsAvailableOnNuget))
-			{
-				// skip non-package dependencies if parent is a package
-				continue;
-			}
-
-			if (deps[i].Name == name)
-			{
-				return true;
-			}
-
-			if (deps[i].HasDep(name, null, false))
-			{
-				return true;
-			}
-		}
-
-		return false;
+		return deps.Any(d => !ShouldFilter(d) && (d.Matches(reference) || d.HasDep(reference, type, serviceableAndNuGetOnly)));
 	}
 
 	public static string GetDepPath(string assemblyPath)
