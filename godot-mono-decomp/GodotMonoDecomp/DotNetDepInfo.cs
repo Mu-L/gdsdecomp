@@ -23,9 +23,9 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 
 		public readonly Version? FileVersion;
 
-		public readonly string Path => System.IO.Path.Combine(Directory ?? "", Name + "." + Extension);
+		public readonly string FileName => Name + Extension;
 
-		public readonly string FileName => Name + "." + Extension;
+		public readonly string Path => System.IO.Path.Combine(Directory ?? "", FileName);
 
 		public readonly AssemblyNameReference AssemblyRef => AssemblyNameReference.Parse($"{Name}, Version={AssemblyVersion?.ToString(4) ?? "1.0.0.0"}, Culture=neutral, PublicKeyToken=null");
 
@@ -61,9 +61,9 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 		public readonly string Extension;
 		public readonly string? Directory;
 
-		public readonly string Path => System.IO.Path.Combine(Directory ?? "", Name + "." + Extension);
+		public readonly string FileName => Name + Extension;
 
-		public readonly string FileName => Name + "." + Extension;
+		public readonly string Path => System.IO.Path.Combine(Directory ?? "", FileName);
 
 		public readonly Version? FileVersion;
 
@@ -112,6 +112,10 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 	public bool IsAvailableOnNuget => Serviceable && HashMatchesNugetOrgStatus != HashMatchesNugetOrg.NoMatch;
 
 	public bool IsRuntimePack => Type == "runtimepack";
+
+	public bool IsProject => Type == "project";
+
+	public bool HasNoRuntimeComponent => runtimeComponents == null || runtimeComponents.Length == 0;
 
 	static string ConvertToAssemblyVersion(string ver)
 	{
@@ -329,19 +333,50 @@ public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 			&& (ThisRuntimeComponent?.Equals(other.ThisRuntimeComponent) ?? other.ThisRuntimeComponent == null);
 	}
 
+	private List<DotNetCoreDepInfo> GetAllDeps(bool followProjectReferences, HashSet<DotNetCoreDepInfo>? seen)
+	{
+		var result = new HashSet<DotNetCoreDepInfo>();
+		result.AddRange(deps);
+		var unseenDeps = deps.Where(d => !seen?.Contains(d) ?? true);
+		if (seen == null)
+		{
+			seen = [this, .. deps];
+		}
+		foreach (var dep in unseenDeps)
+		{
+			if (!followProjectReferences && dep.Type == "project")
+			{
+				continue;
+			}
+			var found = dep.GetAllDeps(followProjectReferences, seen);
+			result.AddRange(found);
+			seen.AddRange(found);
+		}
+		return result.ToList();
+	}
+
+	public List<DotNetCoreDepInfo> GetAllDeps(bool followProjectReferences = false) {
+		return GetAllDeps(followProjectReferences, null);
+	}
+
+
 	public bool Matches(IAssemblyReference? reference)
 	{
 		return reference != null && reference.Name == Name && reference.Version == AssemblyVersion;
 	}
 
-	public bool HasDep(IAssemblyReference reference, string? type, bool serviceableAndNuGetOnly = false)
+	public bool HasDep(IAssemblyReference reference, string? type, bool serviceableAndNuGetOnly = false, bool dontFollowProjectReferences = false)
 	{
 		bool ShouldFilter(DotNetCoreDepInfo dep) => !((string.IsNullOrEmpty(type) || dep.Type == type) && (!serviceableAndNuGetOnly || dep.IsAvailableOnNuget));
-		if (runtimeComponents.Any(c => c.Matches(reference)) && !ShouldFilter(this))
+		if (runtimeComponents.Any(c => c.Matches(reference) && !c.Equals(ThisRuntimeComponent)) && !ShouldFilter(this))
 		{
 			return true;
 		}
-		return deps.Any(d => !ShouldFilter(d) && (d.Matches(reference) || d.HasDep(reference, type, serviceableAndNuGetOnly)));
+		return deps.Any(
+			d => !ShouldFilter(d) &&
+				(d.Matches(reference) ||
+					((!dontFollowProjectReferences || d.Type != "project")
+						&& d.HasDep(reference, type, serviceableAndNuGetOnly, dontFollowProjectReferences))));
 	}
 
 	public static string GetDepPath(string assemblyPath)
