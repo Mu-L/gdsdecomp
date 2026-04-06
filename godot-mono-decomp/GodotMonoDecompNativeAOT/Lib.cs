@@ -58,6 +58,9 @@ static public class Lib
 		bool verifyNuGetPackageIsFromNugetOrg,
 		bool copyOutOfTreeReferences,
 		bool createAdditionalProjectsForProjectReferences,
+		bool removeGeneratedJsonContextBody,
+		bool enableCollectionInitializerLifting,
+		bool emitILAnnotationComments,
 		int OverrideLanguageVersion
 	)
 	{
@@ -71,6 +74,9 @@ static public class Lib
 			VerifyNuGetPackageIsFromNugetOrg = verifyNuGetPackageIsFromNugetOrg,
 			CopyOutOfTreeReferences = copyOutOfTreeReferences,
 			CreateAdditionalProjectsForProjectReferences = createAdditionalProjectsForProjectReferences,
+			RemoveGeneratedJsonContextBody = removeGeneratedJsonContextBody,
+			EnableCollectionInitializerLifting = enableCollectionInitializerLifting,
+			EmitILAnnotationComments = emitILAnnotationComments,
 			OverrideLanguageVersion = OverrideLanguageVersion == 0 ? null : (LanguageVersion)OverrideLanguageVersion,
 			GodotVersionOverride = godotVersionOverrideStr == null ? null : GodotStuff.ParseGodotVersionFromString(godotVersionOverrideStr)
 		};
@@ -108,6 +114,8 @@ static public class Lib
 	struct AOTGodotModuleDecompilerProgress : IProgress<DecompilationProgress>
 	{
 		private delegate int ProgressFunction(IntPtr userData, int current, int total, IntPtr status);
+
+		private event Action<DecompilationProgress>? OnProgress = null;
 
 		private readonly ProgressFunction? progressFunction;
 		private readonly IntPtr userData;

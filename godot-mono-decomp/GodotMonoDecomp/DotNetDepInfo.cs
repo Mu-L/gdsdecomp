@@ -8,8 +8,83 @@ using System.Linq;
 
 namespace GodotMonoDecomp;
 
-public class DotNetCoreDepInfo
+public class DotNetCoreDepInfo : IEquatable<DotNetCoreDepInfo>
 {
+
+	public struct RuntimeComponentInfo : IEquatable<RuntimeComponentInfo>, IEquatable<RuntimeComponentInfo?>
+	{
+		public readonly string Name;
+
+		public readonly string Extension;
+
+		public readonly string? Directory;
+
+		public readonly Version? AssemblyVersion;
+
+		public readonly Version? FileVersion;
+
+		public readonly string FileName => Name + Extension;
+
+		public readonly string Path => System.IO.Path.Combine(Directory ?? "", FileName);
+
+		public readonly AssemblyNameReference AssemblyRef => AssemblyNameReference.Parse($"{Name}, Version={AssemblyVersion?.ToString(4) ?? "1.0.0.0"}, Culture=neutral, PublicKeyToken=null");
+
+		public RuntimeComponentInfo(string name, string extension, string? directory, Version? assemblyVersion, Version? fileVersion)
+		{
+			Name = name;
+			Extension = extension;
+			Directory = directory;
+			AssemblyVersion = assemblyVersion;
+			FileVersion = fileVersion;
+		}
+
+		public readonly bool Matches(IAssemblyReference? reference)
+		{
+			return reference != null && Name == reference.Name && AssemblyVersion == reference.Version;
+		}
+
+		public readonly bool Equals(RuntimeComponentInfo other)
+		{
+			return Name == other.Name && Extension == other.Extension && Directory == other.Directory && AssemblyVersion == other.AssemblyVersion && FileVersion == other.FileVersion;
+		}
+
+		public readonly bool Equals(RuntimeComponentInfo? other)
+		{
+			return other != null && Equals(other.Value);
+		}
+
+	}
+
+	public struct NativeComponentInfo : IEquatable<NativeComponentInfo>, IEquatable<NativeComponentInfo?>
+	{
+		public readonly string Name;
+		public readonly string Extension;
+		public readonly string? Directory;
+
+		public readonly string FileName => Name + Extension;
+
+		public readonly string Path => System.IO.Path.Combine(Directory ?? "", FileName);
+
+		public readonly Version? FileVersion;
+
+		public NativeComponentInfo(string name, string extension, string? directory, Version? fileVersion)
+		{
+			Name = name;
+			Extension = extension;
+			Directory = directory;
+			FileVersion = fileVersion;
+		}
+
+		public readonly bool Equals(NativeComponentInfo other)
+		{
+			return Name == other.Name && Extension == other.Extension && Directory == other.Directory && FileVersion == other.FileVersion;
+		}
+
+		public readonly bool Equals(NativeComponentInfo? other)
+		{
+			return other != null && Equals(other.Value);
+		}
+	}
 
 	public enum HashMatchesNugetOrg
 	{
@@ -22,19 +97,41 @@ public class DotNetCoreDepInfo
 	public readonly string Name;
 	public readonly string Version;
 	public readonly string Type;
-	public readonly string Path;
-	public readonly string Sha512;
+	public readonly string? Sha512;
+	public readonly string? Path;
+	public readonly string? HashPath;
 	public readonly bool Serviceable;
 	public readonly DotNetCoreDepInfo[] deps;
-	public readonly string[] runtimeComponents;
+	public readonly RuntimeComponentInfo[] runtimeComponents;
+	public readonly NativeComponentInfo[] nativeComponents;
+	public readonly RuntimeComponentInfo? ThisRuntimeComponent;
 	public HashMatchesNugetOrg HashMatchesNugetOrgStatus { get; private set; } = HashMatchesNugetOrg.Unknown;
-	public AssemblyNameReference AssemblyRef => AssemblyNameReference.Parse($"{Name}, Version={GetCorrectVersion(Version)}, Culture=neutral, PublicKeyToken=null");
+	public System.Version AssemblyVersion => ThisRuntimeComponent?.AssemblyVersion ?? System.Version.Parse(ConvertToAssemblyVersion(Version));
+	public AssemblyNameReference AssemblyRef => ThisRuntimeComponent?.AssemblyRef ?? AssemblyNameReference.Parse($"{Name}, Version={ConvertToAssemblyVersion(Version)}, Culture=neutral, PublicKeyToken=null");
 
+	public bool IsAvailableOnNuget => Serviceable && HashMatchesNugetOrgStatus != HashMatchesNugetOrg.NoMatch;
 
-	static string GetCorrectVersion(string ver)
+	public bool IsRuntimePack => Type == "runtimepack";
+
+	public bool IsProject => Type == "project";
+
+	public bool HasNoRuntimeComponent => runtimeComponents == null || runtimeComponents.Length == 0;
+
+	static string ConvertToAssemblyVersion(string ver)
 	{
-		// if it contains less than 4 parts, add ".0" to the end
-		var parts = ver.Split('.').ToList();
+		var parts = ver.TrimStart('v').Split('-')[0].Split('+')[0].Trim().Split('.').ToList();
+		for (int i = 0; i < parts.Count; i++)
+		{
+			if (!UInt64.TryParse(parts[i], out _))
+			{
+				parts = parts.Take(i).ToList();
+				break;
+			}
+		}
+		if (parts.Count == 0)
+		{
+			return "1.0.0.0";
+		}
 		while (parts.Count < 4)
 		{
 			parts.Add("0");
@@ -48,9 +145,13 @@ public class DotNetCoreDepInfo
 		string version,
 		string type,
 		bool serviceable,
-		string path,
 		string sha512,
-		DotNetCoreDepInfo[] deps, string[] runtimeComponents)
+		string? path,
+		string? hashPath,
+		DotNetCoreDepInfo[] deps,
+		RuntimeComponentInfo[] runtimeComponents,
+		NativeComponentInfo[] nativeComponents,
+		RuntimeComponentInfo? thisRuntimeComponent)
 	{
 		var parts = fullName.Split('/');
 		this.Name = parts[0];
@@ -66,15 +167,30 @@ public class DotNetCoreDepInfo
 		this.Type = type;
 		this.Serviceable = serviceable;
 		this.Path = path;
+		this.HashPath = hashPath;
 		this.Sha512 = sha512;
 
 		this.deps = deps;
 		this.runtimeComponents = runtimeComponents;
+		this.nativeComponents = nativeComponents;
+		this.ThisRuntimeComponent = thisRuntimeComponent;
 	}
 
 	static DotNetCoreDepInfo CreateFromJson(string fullName, string version, string target, JObject blob)
 	{
 		return Create(fullName, version, target, blob, []);
+	}
+
+	static System.Version? TryParseVersionOrDefault(string? version, string? defaultVersion)
+	{
+		if (string.IsNullOrEmpty(version) || !System.Version.TryParse(version, out var versionResult))
+		{
+			if (string.IsNullOrEmpty(defaultVersion) || !System.Version.TryParse(defaultVersion, out versionResult))
+			{
+				return null;
+			}
+		}
+		return versionResult;
 	}
 
 	static DotNetCoreDepInfo Create(string fullName, string version, string target, JObject blob,
@@ -92,34 +208,68 @@ public class DotNetCoreDepInfo
 			Version = version;
 		}
 
-		var type = "runtimedll";
-		var serviceable = false;
-		var path = "";
-		var sha512 = "";
+		string type = "runtimedll";
+		bool serviceable = false;
+		string sha512 = "";
+		string? path = null;
+		string? hashPath = null;
 		var libraryBlob = blob["libraries"]?[Name + "/" + Version] as JObject;
 		if (libraryBlob != null)
 		{
 			type = libraryBlob["type"]?.ToString() ?? type;
 			serviceable = libraryBlob["serviceable"]?.Value<bool>() ?? serviceable;
-			path = libraryBlob["path"]?.ToString() ?? "";
 			sha512 = libraryBlob["sha512"]?.ToString() ?? "";
+			path = libraryBlob["path"]?.ToString();
+			hashPath = libraryBlob["hashPath"]?.ToString();
 		}
 
-		string[] runtimeComponents = Array.Empty<string>();
+		var runtimeComponents = new List<RuntimeComponentInfo>();
 		var runtimeBlob = blob["targets"]?[target]?[Name + "/" + Version]?["runtime"] as JObject;
+		RuntimeComponentInfo? thisRuntimeComponent = null;
 		if (runtimeBlob != null)
 		{
-			runtimeComponents = new string[runtimeBlob.Count];
-			int i = 0;
 			foreach (var prop in runtimeBlob.Properties())
 			{
-				runtimeComponents[i] = System.IO.Path.GetFileNameWithoutExtension(prop.Name);
-				i++;
+				var name = System.IO.Path.GetFileNameWithoutExtension(prop.Name);
+				bool isThisAssembly = name == Name;
+				var directory = System.IO.Path.GetDirectoryName(prop.Name);
+				var extension = System.IO.Path.GetExtension(prop.Name);
+				var assemblyVersion = TryParseVersionOrDefault(
+					prop.Value["assemblyVersion"]?.ToString(),
+					isThisAssembly ? ConvertToAssemblyVersion(Version) : null
+				);
+				var fileVersion = TryParseVersionOrDefault(
+					prop.Value["fileVersion"]?.ToString(),
+					isThisAssembly ? ConvertToAssemblyVersion(Version) : null
+				);
+				var runtimeComponent = new RuntimeComponentInfo(name, extension, directory, assemblyVersion, fileVersion);
+				runtimeComponents.Add(runtimeComponent);
+				if (isThisAssembly)
+				{
+					thisRuntimeComponent = runtimeComponent;
+				}
 			}
 		}
 
+		// string[] nativeComponents = Array.Empty<string>();
+		var nativeBlob = blob["targets"]?[target]?[Name + "/" + Version]?["native"] as JObject;
+		var nativeComponents = new List<NativeComponentInfo>();
+		if (nativeBlob != null)
+		{
+			foreach (var prop in nativeBlob.Properties())
+			{
+				var name = System.IO.Path.GetFileNameWithoutExtension(prop.Name);
+				var extension = System.IO.Path.GetExtension(prop.Name);
+				var directory = System.IO.Path.GetDirectoryName(prop.Name);
+				var fileVersion = TryParseVersionOrDefault(
+					prop.Value["fileVersion"]?.ToString(),
+					null
+				);
+				nativeComponents.Add(new NativeComponentInfo(name, extension, directory, fileVersion));
+			}
+		}
 		var deps = getDeps(Name, Version, target, blob, _deps);
-		return new DotNetCoreDepInfo(Name, Version, type, serviceable, path, sha512, deps, runtimeComponents);
+		return new DotNetCoreDepInfo(Name, Version, type, serviceable, sha512, path, hashPath, deps, runtimeComponents.ToArray(), nativeComponents.ToArray(), thisRuntimeComponent);
 	}
 
 
@@ -167,33 +317,71 @@ public class DotNetCoreDepInfo
 		return result.ToArray();
 	}
 
-	public bool HasDep(string name, string? type, bool serviceableAndNuGetOnly = false)
+	public bool Equals(DotNetCoreDepInfo? other)
 	{
-		if (runtimeComponents.Contains(name) && !((!string.IsNullOrEmpty(type) && Type != type) || (serviceableAndNuGetOnly && (!Serviceable || HashMatchesNugetOrgStatus == HashMatchesNugetOrg.NoMatch))))
+		return other != null
+			&& Name == other.Name
+			&& Version == other.Version
+			&& Type == other.Type
+			&& Serviceable == other.Serviceable
+			&& Path == other.Path
+			&& HashPath == other.HashPath
+			&& Sha512 == other.Sha512
+			&& deps.SequenceEqual(other.deps)
+			&& runtimeComponents.SequenceEqual(other.runtimeComponents)
+			&& nativeComponents.SequenceEqual(other.nativeComponents)
+			&& (ThisRuntimeComponent?.Equals(other.ThisRuntimeComponent) ?? other.ThisRuntimeComponent == null);
+	}
+
+	private List<DotNetCoreDepInfo> GetAllDeps(bool followProjectReferences, HashSet<DotNetCoreDepInfo>? seen)
+	{
+		var result = new HashSet<DotNetCoreDepInfo>();
+		result.AddRange(deps);
+		var unseenDeps = deps.Where(d => !seen?.Contains(d) ?? true);
+		if (seen == null)
+		{
+			seen = [this, .. deps];
+		}
+		foreach (var dep in unseenDeps)
+		{
+			if (!followProjectReferences && dep.Type == "project")
+			{
+				continue;
+			}
+			var found = dep.GetAllDeps(followProjectReferences, seen);
+			result.AddRange(found);
+			seen.AddRange(found);
+		}
+		return result.ToList();
+	}
+
+	public List<DotNetCoreDepInfo> GetAllDeps(bool followProjectReferences = false) {
+		return GetAllDeps(followProjectReferences, null);
+	}
+
+
+	public bool Matches(IAssemblyReference? reference)
+	{
+		return reference != null && reference.Name == Name && reference.Version == AssemblyVersion;
+	}
+
+	public bool HasDep(IAssemblyReference reference, string? type, bool serviceableAndNuGetOnly = false, bool dontFollowProjectReferences = false)
+	{
+		bool ShouldFilter(DotNetCoreDepInfo dep) => !((string.IsNullOrEmpty(type) || dep.Type == type) && (!serviceableAndNuGetOnly || dep.IsAvailableOnNuget));
+		if (runtimeComponents.Any(c => c.Matches(reference) && !c.Equals(ThisRuntimeComponent)) && !ShouldFilter(this))
 		{
 			return true;
 		}
-		for (int i = 0; i < deps.Length; i++)
-		{
-			if ((!string.IsNullOrEmpty(type) && deps[i].Type != type) ||
-				(serviceableAndNuGetOnly && (!deps[i].Serviceable || deps[i].HashMatchesNugetOrgStatus == HashMatchesNugetOrg.NoMatch)))
-			{
-				// skip non-package dependencies if parent is a package
-				continue;
-			}
+		return deps.Any(
+			d => !ShouldFilter(d) &&
+				(d.Matches(reference) ||
+					((!dontFollowProjectReferences || d.Type != "project")
+						&& d.HasDep(reference, type, serviceableAndNuGetOnly, dontFollowProjectReferences))));
+	}
 
-			if (deps[i].Name == name)
-			{
-				return true;
-			}
-
-			if (deps[i].HasDep(name, null, false))
-			{
-				return true;
-			}
-		}
-
-		return false;
+	public DotNetCoreDepInfo? GetDep(IAssemblyReference reference)
+	{
+		return GetAllDeps().FirstOrDefault(d => d.Matches(reference));
 	}
 
 	public static string GetDepPath(string assemblyPath)

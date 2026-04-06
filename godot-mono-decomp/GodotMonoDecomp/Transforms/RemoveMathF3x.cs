@@ -19,9 +19,8 @@
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Transforms;
-using ICSharpCode.Decompiler.TypeSystem;
 
-namespace GodotMonoDecomp;
+namespace GodotMonoDecomp.Transforms;
 
 /// <summary>
 ///```c#
@@ -34,17 +33,24 @@ public class RemoveMathF3x : DepthFirstAstVisitor, IAstTransform
 	{
 		rootNode.AcceptVisitor(this);
 	}
-	public override void VisitMemberReferenceExpression(MemberReferenceExpression methodInvocation)
+
+	public static void ReplaceAndCopyAnnotations(Expression expression, Expression newExpression)
 	{
-		string name = methodInvocation.ToString();
-		bool isPi = name.EndsWith("MathF.PI");
-		if (isPi || name.EndsWith("MathF.E"))
+		newExpression.CopyAnnotationsFrom(expression);
+		expression.ReplaceWith(newExpression);
+	}
+	public override void VisitMemberReferenceExpression(MemberReferenceExpression mre)
+	{
+		if (mre.Target.ToString() == "MathF" && (mre.MemberName == "PI" || mre.MemberName == "E"))
 		{
-			string newMember = isPi ? "Pi" : "E";
-			MemberReferenceExpression newExpression = new MemberReferenceExpression(new IdentifierExpression("Mathf"), newMember);
-			methodInvocation.ReplaceWith(newExpression);
+			var mathf = new IdentifierExpression("Mathf");
+			ReplaceAndCopyAnnotations(mre.Target, mathf);
+			if (mre.MemberName == "PI")
+			{
+				mre.MemberName = "Pi";
+			}
 			return;
 		}
-		base.VisitMemberReferenceExpression(methodInvocation);
+		base.VisitMemberReferenceExpression(mre);
 	}
 }
